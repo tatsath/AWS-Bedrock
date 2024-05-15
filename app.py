@@ -25,7 +25,7 @@ from langchain.chains import RetrievalQA
 
 ## Bedrock Clients
 bedrock=boto3.client(service_name="bedrock-runtime")
-bedrock_embeddings=BedrockEmbeddings(model_id="amazon.titan-embed-text-v1",client=bedrock)
+bedrock_embeddings=BedrockEmbeddings(model_id="amazon.titan-embed-image-v1",client=bedrock)
 
 
 ## Data ingestion
@@ -49,17 +49,17 @@ def get_vector_store(docs):
     )
     vectorstore_faiss.save_local("faiss_index")
 
-def get_claude_llm():
+def get_titan_llm():
     ##create the Anthropic Model
-    llm=Bedrock(model_id="ai21.j2-mid-v1",client=bedrock,
-                model_kwargs={'maxTokens':512})
+    llm=Bedrock(model_id="amazon.titan-text-express-v1",client=bedrock,
+                model_kwargs={'maxTokenCount':4096})
     
     return llm
 
-def get_llama2_llm():
+def get_mistral_llm():
     ##create the Anthropic Model
-    llm=Bedrock(model_id="meta.llama2-70b-chat-v1",client=bedrock,
-                model_kwargs={'max_gen_len':512})
+    llm=Bedrock(model_id="mistral.mistral-7b-instruct-v0:2",client=bedrock,
+                model_kwargs={'max_tokens':1000})
     
     return llm
 
@@ -111,19 +111,19 @@ def main():
                 get_vector_store(docs)
                 st.success("Done")
 
-    if st.button("Claude Output"):
+    if st.button("Titan Output"):
         with st.spinner("Processing..."):
-            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings)
-            llm=get_claude_llm()
+            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings, allow_dangerous_deserialization=True)
+            llm=get_titan_llm()
             
             #faiss_index = get_vector_store(docs)
             st.write(get_response_llm(llm,faiss_index,user_question))
             st.success("Done")
 
-    if st.button("Llama2 Output"):
+    if st.button("Mistral Output"):
         with st.spinner("Processing..."):
-            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings)
-            llm=get_llama2_llm()
+            faiss_index = FAISS.load_local("faiss_index", bedrock_embeddings,allow_dangerous_deserialization=True)
+            llm=get_mistral_llm()
             
             #faiss_index = get_vector_store(docs)
             st.write(get_response_llm(llm,faiss_index,user_question))
