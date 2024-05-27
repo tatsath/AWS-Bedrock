@@ -99,49 +99,47 @@ def get_llm_transformer(llm):
 
 def graph_documents(llm, docs):
     transformer = get_llm_transformer(llm)
-    text = """
-    Marie Curie, born in 1867, was a Polish and naturalised-French physicist and chemist who conducted pioneering research on radioactivity.
-    She was the first woman to win a Nobel Prize, the first person to win a Nobel Prize twice, and the only person to win a Nobel Prize in two scientific fields.
-    Her husband, Pierre Curie, was a co-winner of her first Nobel Prize, making them the first-ever married couple to win the Nobel Prize and launching the Curie family legacy of five Nobel Prizes.
-    She was, in 1906, the first woman to become a professor at the University of Paris.
-    """
-    #breakpoint()
-    documents = [Document(page_content=text)]
-    print(documents)
-    graph_docs = transformer.convert_to_graph_documents(documents=documents)
-    # graph_docs = transformer.convert_to_graph_documents(documents=docs)
+    # text = """
+    # Marie Curie, born in 1867, was a Polish and naturalised-French physicist and chemist who conducted pioneering research on radioactivity.
+    # She was the first woman to win a Nobel Prize, the first person to win a Nobel Prize twice, and the only person to win a Nobel Prize in two scientific fields.
+    # Her husband, Pierre Curie, was a co-winner of her first Nobel Prize, making them the first-ever married couple to win the Nobel Prize and launching the Curie family legacy of five Nobel Prizes.
+    # She was, in 1906, the first woman to become a professor at the University of Paris.
+    # """
+    # documents = [Document(page_content=text)]
+    # graph_docs = transformer.convert_to_graph_documents(documents=documents)
+    graph_docs = transformer.convert_to_graph_documents(documents=docs)
     print(f"Nodes; {graph_docs[0].nodes}")
     print(f"relationships; {graph_docs[0].relationships}")
     return graph_docs
 
 
-llm = get_llama_llm()
-docs = loader()
-graph_documents(llm, docs)
+# llm = get_llama_llm()
+# docs = loader()
+# graph_documents(llm, docs)
 
 
-# def get_current_stock_price(ticker):
-#     ticker_data = yf.Ticker(ticker)
-#     recent = ticker_data.history(period="1d")
-#     return recent.iloc[0]["Close"]
+def get_current_stock_price(ticker):
+    ticker_data = yf.Ticker(ticker)
+    recent = ticker_data.history(period="1d")
+    return recent.iloc[0]["Close"]
 
 
-# class CurrentStockPriceInput(BaseModel):
-#     """Inputs for get_current_stock_price"""
+class CurrentStockPriceInput(BaseModel):
+    """Inputs for get_current_stock_price"""
 
-#     ticker: str = Field(description="Ticker symbol of the stock")
+    ticker: str = Field(description="Ticker symbol of the stock")
 
 
-# class CurrentStockPriceTool(BaseTool):
-#     name = "get_current_stock_price"
-#     description = "Useful when you want to get current stock price"
-#     args_schema: Type[BaseModel] = CurrentStockPriceInput  # type: ignore
+class CurrentStockPriceTool(BaseTool):
+    name = "get_current_stock_price"
+    description = "Useful when you want to get current stock price"
+    args_schema: Type[BaseModel] = CurrentStockPriceInput  # type: ignore
 
-#     def _run(self, ticker):
-#         return get_current_stock_price(ticker)
+    def _run(self, ticker):
+        return get_current_stock_price(ticker)
 
-#     def _arun(self, ticker):
-#         raise NotImplementedError("func get_current_stock_price did not support async.")
+    def _arun(self, ticker):
+        raise NotImplementedError("func get_current_stock_price did not support async.")
 
 
 prompt_template = """
@@ -190,44 +188,55 @@ def configure_retriever():
     return vectorstore
 
 
-# latest_stock_price = CurrentStockPriceTool(
-#     name="get_current_stock_price",
-#     description="Get the latest stock price for a given ticker symbol.",
-# )
+latest_stock_price = CurrentStockPriceTool(
+    name="get_current_stock_price",
+    description="Get the latest stock price for a given ticker symbol.",
+)
 
-# # print("init retriever tool")
-
-
-# def search_docs(query):
-#     """Searches the document store for relevant information."""
-#     vectorstore = configure_retriever()
-#     print(f"query: {query}")
-#     # if query["value"]:
-#     #     results = vectorstore.similarity_search(query["value"])
-#     # else:
-#     results = vectorstore.similarity_search(query["query"])
-#     return {"docs": results}
+# print("init retriever tool")
 
 
-# retriever_tool = Tool(
-#     name="search_docs",
-#     func=search_docs,
-#     description="Search the document store for relevant information.",
-# )
+def search_docs(query):
+    """Searches the document store for relevant information."""
+    vectorstore = configure_retriever()
+    print(f"query: {query}")
+    # if query["value"]:
+    #     results = vectorstore.similarity_search(query["value"])
+    # else:
+    results = vectorstore.similarity_search(query["query"])
+    return {"docs": results}
 
-# # print("init tools")
-# tools = [retriever_tool, latest_stock_price]
-# print("init openai functions")
-# # llm = get_mistral_llm()
+
+retriever_tool = Tool(
+    name="search_docs",
+    func=search_docs,
+    description="Search the document store for relevant information.",
+)
+
+# print("init tools")
+tools = [retriever_tool, latest_stock_price]
+print("init openai functions")
 # llm = get_mistral_llm()
-# agent = initialize_agent(
-#     tools,
-#     llm,
-#     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-#     memory=ConversationBufferMemory(),
-#     verbose=True,
+llm = get_mistral_llm()
+agent = initialize_agent(
+    tools,
+    llm,
+    agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    memory=ConversationBufferMemory(),
+    verbose=True,
+)
+# print("init agent_executor")
+# agent_executor = AgentExecutor(
+#     agent=agent, tools=tools, verbose=True, return_intermediate_steps=True
 # )
-
+# print("questions: Hello")
+# agent_executor.invoke({"input": "Hello?", "agent_scratchpad": ""})
+# print("questions: What is machine learning")
+# agent_executor.invoke({"input": "What is machine learning?", "agent_scratchpad": ""})
+# print("questions: AAPL stock price")
+# agent_executor.invoke(
+#     {"input": "What is the latest stock price of AAPL?", "agent_scratchpad": ""}
+# )
 
 
 def main():
@@ -246,30 +255,14 @@ def main():
                 get_vector_store(docs)
                 st.success("Done")
 
-    # if st.button("Run Agent"):
-    #     with st.spinner("Processing..."):
-    #         st_callback = StreamlitCallbackHandler(st.container())
-    #         response = agent.invoke(
-    #             {"input": user_question}, {"callbacks": [st_callback]}
-    #         )
-    #         st.write(response["output"])
-    #         st.success("Done")
-
-    if st.button("Run Graph Rag"):
+    if st.button("Run Agent"):
         with st.spinner("Processing..."):
             st_callback = StreamlitCallbackHandler(st.container())
-            llm = get_titan_llm()
-            docs = """ Marie Curie, born in 1867, was a Polish and naturalised-French physicist and chemist who conducted pioneering research on radioactivity.
-                    She was the first woman to win a Nobel Prize, the first person to win a Nobel Prize twice, and the only person to win a Nobel Prize in two scientific fields.
-                    Her husband, Pierre Curie, was a co-winner of her first Nobel Prize, making them the first-ever married couple to win the Nobel Prize and launching the Curie family legacy of five Nobel Prizes.
-                    She was, in 1906, the first woman to become a professor at the University of Paris.
-                    """
-            response = graph_documents(llm, docs)
-            # agent.invoke(
-            #     {"input": user_question}, {"callbacks": [st_callback]}
-            # )
+            response = agent.invoke(
+                {"input": user_question}, {"callbacks": [st_callback]}
+            )
             st.write(response["output"])
-            st.success("Done")        
+            st.success("Done")
 
 
 if __name__ == "__main__":

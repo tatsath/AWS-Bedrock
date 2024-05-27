@@ -6,3 +6,4 @@ streamlit
 faiss-cpu
 langchain_experimental
 yfinance
+json_repair 
