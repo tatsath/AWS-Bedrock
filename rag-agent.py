@@ -1,11 +1,13 @@
 import os
 import re
 import boto3
+from botocore.client import Config
 import streamlit as st
 import yfinance as yf
 from datetime import datetime
 
 
+from langchain_aws import ChatBedrock, BedrockEmbeddings
 from langchain.memory import ConversationSummaryMemory
 from langchain.tools.retriever import create_retriever_tool
 from langchain.prompts import MessagesPlaceholder
@@ -14,35 +16,43 @@ from langchain.agents import (
     AgentExecutor,
     create_tool_calling_agent,
 )
-from langchain.vectorstores import FAISS
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_community.embeddings import BedrockEmbeddings
-from langchain.llms.bedrock import Bedrock
 from langchain.schema import SystemMessage
 from langchain_community.tools.yahoo_finance_news import YahooFinanceNewsTool
 from langchain_experimental.tools import PythonAstREPLTool
 from langchain.tools import tool
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # Testing only
-from langchain_groq import ChatGroq
-
-
-bedrock = boto3.client(service_name="bedrock-runtime")
-
-llm = Bedrock(
-    model_id="mistral.mistral-7b-instruct-v0:2",
-    client=bedrock,
-    model_kwargs={"max_tokens": 4096},
-)
+# from langchain_groq import ChatGroq
+#
+#
 # llm = ChatGroq(
 #     model="llama3-70b-8192",
 #     temperature=0,
 #     max_tokens=None,
 #     timeout=None,
 #     max_retries=3,
+#     stop_sequences=[],
 # )
-embeddings = BedrockEmbeddings(model_id="amazon.titan-embed-image-v1", client=bedrock)
+
+
+session = boto3.session.Session()  # type: ignore
+# region = session.region_name
+region = "us-west-2"
+bedrock_config = Config(
+    connect_timeout=120, read_timeout=120, retries={"max_attempts": 0}
+)
+bedrock_client = boto3.client("bedrock-runtime", region_name=region)
+
+llm = ChatBedrock(model_id="meta.llama3-8b-instruct-v1:0", client=bedrock_client)
+embeddings = BedrockEmbeddings(
+    model_id="amazon.titan-embed-text-v1",
+    client=bedrock_client,
+    region_name="us-west-2",
+)
 
 
 st.set_page_config(
@@ -62,13 +72,13 @@ st.info(
 system_message = SystemMessage(
     content=(
         f"""You are an agent designed to answer questions about Machine Learning, AI, Finance, AlgoTrading, Stocks, and Quantitative Finance.
-        Today's Date and Time in YYYY-MM-DD HH:MM:SS is: "{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}".
-        You can plot charts using matplotlib. If user questions can be explained by chart or python code, please provide the chart or code as a response.
-        When responding, please provide a clear and complete answer that fully addresses the user's question.
-        If necessary, provide detailed explanations, examples, and data to support your response.
-        If you need to run code to get the answer, please do so and include the output in your response. Always use single code block to write python code. Example: ```python\nprint("Hello, World!")```
-        Clarity and completeness are more important than conciseness, so please take the time to provide a thorough and accurate response.
-        Do not mention anything about tools in your response."""
+Today's Date and Time in DD-MM-YYYY HH:MM:SS is: "{datetime.now().strftime("%d-%m-%Y %H:%M:%S")}". Provide responses in markdown format.
+Always use Tools to fetch historical stock data, latest stock price, financial news, run python code and document retriever. If tool is not available then you can write python code to fetch data.
+When responding, please provide a clear and complete answer that fully addresses the user's question.
+If necessary, provide detailed explanations, examples, and data to support your response.
+You can plot charts using matplotlib. If user questions can be explained by chart or python code, please provide the chart or code as a response. Write complete python code without providing hypothetical outputs, use print or plot in code for output.
+If you need to run code to get the answer, please do so and include the output in your response. Always use single code block to write python code. Example: ```python\\nprint("Hello, World!")```
+Clarity and completeness are more important than conciseness, so please take the time to provide a thorough and accurate response."""
     )
 )
 if "messages" not in st.session_state.keys():
@@ -147,8 +157,8 @@ repl_tool = PythonAstREPLTool()
 yf_news_tool = YahooFinanceNewsTool()
 retriever_tool = create_retriever_tool(
     retriever,
-    "building_code_docs",
-    "Search and return documents regarding building code, design and consturction issues. Input should be a fully formed question.",
+    "document_retriever",
+    "Retrieve relevant financial documents, SEC filings (10k, 10Q), market trends, and other related information based on the user's question. Search for specific terms and keywords mentioned in the user's query to provide accurate and relevant results.",
 )
 
 tools = [
@@ -164,6 +174,7 @@ chat_memory = ConversationSummaryMemory(
     llm=llm,
     memory_key=memory_key,
     return_messages=True,
+    output_key="output",
 )
 
 prompt = OpenAIFunctionsAgent.create_prompt(
@@ -176,6 +187,8 @@ agent_executor = AgentExecutor.from_agent_and_tools(
     agent=agent_engine,
     tools=tools,
     memory=chat_memory,
+    return_intermediate_steps=True,
+    handle_parsing_errors=True,
     verbose=True,
 )
 
@@ -193,7 +206,12 @@ def run_code_block(code):
     if code:
         try:
             mod_code = code.replace("plt.show()", "plt.savefig('plot.png')")
-            response = repl_tool.run(mod_code)
+            repl_response = repl_tool.run(mod_code)
+            if repl_response:
+                st.html(
+                    f"<big>Code Execution Results:</big><br><code>{repl_response}</code>"
+                )
+                return repl_response
             if os.path.exists("plot.png"):
                 st.image("plot.png", use_column_width=True)
                 os.remove("plot.png")
@@ -219,12 +237,24 @@ for message in st.session_state.messages:
 if st.session_state.messages[-1]["role"] != "assistant":
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = st.session_state.agent_executor.invoke({"input": prompt})
+            st_callback = StreamlitCallbackHandler(st.container())
+            response = st.session_state.agent_executor.invoke(
+                {"input": prompt}, {"callbacks": [st_callback]}
+            )
             st.write(response["output"])
             code_block = if_code_block(response["output"])
             if code_block["is_code_block"]:
-                run_code_block(code_block["code"])
-            message = {"role": "assistant", "content": response["output"]}
+                repl_res = run_code_block(code_block["code"])
+                message = {
+                    "role": "assistant",
+                    "content": f"{response['output']}\nCode Execution Result: {repl_res}",
+                }
+                st.session_state.messages.append(message)
+            else:
+                message = {
+                    "role": "assistant",
+                    "content": response["output"],
+                }
 
-            # Add response to message history
-            st.session_state.messages.append(message)
+                # Add response to message history
+                st.session_state.messages.append(message)
