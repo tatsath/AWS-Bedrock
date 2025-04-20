@@ -903,27 +903,52 @@ LOW_SENTENCE = .25   # highlight thresholds
 MID_SENTENCE = .50
 
 # ---------- new helper ----------
-def highlight(text: str, sims: list[float]) -> str:
+def highlight_with_metrics(text: str, metrics: dict) -> str:
     """
-    Color-code text based on similarity scores:
-    - Red: similarity < 0.25 (low similarity)
-    - Orange: similarity < 0.50 (medium similarity)
-    - Green: similarity >= 0.50 (high similarity)
+    Color-code text based on multiple metrics:
+    - Red: Any metric < 0.25 (low confidence/quality)
+    - Orange: Any metric < 0.50 (medium confidence/quality)
+    - No highlight (black text): All metrics >= 0.50 (high confidence/quality)
     """
     sentences = nltk.sent_tokenize(text)
     html = ""
-    for sent, sim in zip(sentences, sims):
-        if sim < 0.25:
-            color = "#FF4B4B"  # bright red
-            bg_color = "#FFE5E5"  # light red background
-        elif sim < 0.50:
-            color = "#FFA500"  # orange
-            bg_color = "#FFF3E0"  # light orange background
-        else:
-            color = "#007500"  # green
-            bg_color = "#F0FFF0"  # light green background
+    
+    # Get metrics
+    answer_relevancy = metrics.get('answer_relevancy', 0.0)
+    faithfulness = metrics.get('faithfulness', 0.0)
+    context_utilization = metrics.get('context_utilization', 0.0)
+    consistency = metrics.get('consistency', 0.0)
+    
+    for sent in sentences:
+        # Determine which metrics are concerning for this sentence
+        low_metrics = []
+        if answer_relevancy < 0.95:
+            low_metrics.append(f"Relevancy: {answer_relevancy:.2f}")
+        if faithfulness < .95:
+            low_metrics.append(f"Faithfulness: {faithfulness:.2f}")
+        if context_utilization < 0.50:
+            low_metrics.append(f"Context Use: {context_utilization:.2f}")
+        if consistency < 0.50:
+            low_metrics.append(f"Consistency: {consistency:.2f}")
             
-        html += f'<span style="color: {color}; background-color: {bg_color}; padding: 2px 4px; border-radius: 3px; margin: 0 2px;" title="similarity: {sim:.2f}">{sent}</span> '
+        if low_metrics:
+            if any(score < 0.25 for score in [answer_relevancy, faithfulness, context_utilization, consistency]):
+                color = "#FF4B4B"  # bright red
+                bg_color = "#FFE5E5"  # light red background
+                confidence = "Low confidence"
+            else:
+                color = "#FFA500"  # orange
+                bg_color = "#FFF3E0"  # light orange background
+                confidence = "Medium confidence"
+                
+            tooltip = f"""Confidence: {confidence}
+Concerns: {', '.join(low_metrics)}"""
+            
+            html += f'<span style="color: {color}; background-color: {bg_color}; padding: 2px 4px; border-radius: 3px; margin: 0 2px;" title="{tooltip}">{sent}</span> '
+        else:
+            # No highlighting needed - use black text
+            html += f'<span style="color: black;">{sent}</span> '
+            
     return html
 
 
@@ -946,82 +971,74 @@ def get_response_from_LLM(prompt):
         st.chat_message("user").write(prompt)
         
         with st.chat_message("assistant"):
-            # Get RAGAS scores first for overall metrics
-            os.environ["OPENAI_API_KEY"] = st.session_state.openai_api_key
-            eval_data = {
-                "question": [prompt],
-                "answer": [answer],
-                "contexts": [[d.page_content for d in docs]]
-            }
-            
-            from datasets import Dataset
-            dataset = Dataset.from_dict(eval_data)
-            ragas_scores = evaluate(dataset, metrics=ragas_metrics)
-            
-            # Get consistency score
-            consistency_score = consistency_llm.evaluate_strings(
-                prediction=answer, 
-                reference=""
-            ).score / 5.0  # Normalize to 0-1
-            
-            # 2.1. Calculate sentence similarities and highlight
             try:
-                # Get embeddings for context and answer sentences
-                embeddings = select_embeddings_model()
-                sentences = nltk.sent_tokenize(answer)
+                # Get RAGAS scores and consistency score
+                os.environ["OPENAI_API_KEY"] = st.session_state.openai_api_key
+                eval_data = {
+                    "question": [prompt],
+                    "answer": [answer],
+                    "contexts": [[d.page_content for d in docs]]
+                }
                 
-                # Calculate embeddings for context and sentences
-                chunk_vecs = embeddings.embed_documents([d.page_content for d in docs])
-                sent_vecs = embeddings.embed_documents(sentences)
+                from datasets import Dataset
+                dataset = Dataset.from_dict(eval_data)
+                ragas_scores = evaluate(dataset, metrics=ragas_metrics)
                 
-                # Calculate similarities
-                import scipy.spatial
-                sims = [1 - min(scipy.spatial.distance.cosine(s, c) for c in chunk_vecs)
-                        for s in sent_vecs]
+                # Get consistency score
+                consistency_score = consistency_llm.evaluate_strings(
+                    prediction=answer, 
+                    reference=""
+                ).score / 5.0  # Normalize to 0-1
                 
-                # Display highlighted answer
-                st.markdown(highlight(answer, sims), unsafe_allow_html=True)
+                # Combine all scores
+                all_scores = {**ragas_scores}
+                for metric_name, score in all_scores.items():
+                    if isinstance(score, (int, float)):
+                        all_scores[metric_name] = score
+                all_scores["consistency"] = consistency_score
+                
+                # Display highlighted answer with all metrics considered
+                st.markdown(highlight_with_metrics(answer, all_scores), unsafe_allow_html=True)
 
                 # Show warnings for any metric below 0.5
                 low_metrics = []
-                all_scores = {**ragas_scores, "consistency": consistency_score}
                 for metric_name, score in all_scores.items():
                     if isinstance(score, (int, float)) and score < 0.5:
                         low_metrics.append(f"**{metric_name}** ({score:.2f})")
                 
                 if low_metrics:
-                    warning_msg = "⚠️ Low scores detected in: " + ", ".join(low_metrics)
-                    st.warning(warning_msg + " – consider revising the highlighted sentences.")
+                    warning_msg = "⚠️ Quality concerns detected in: " + ", ".join(low_metrics)
+                    st.warning(warning_msg + "\n\n" + """
+                    • Red highlighting: Major concerns (scores < 0.25)
+                    • Orange highlighting: Some concerns (scores < 0.50)
+                    • Green highlighting: Good quality (scores ≥ 0.50)
+                    
+                    Hover over highlighted text to see detailed scores.""")
 
             except Exception as e:
                 # Fallback to plain answer if highlighting fails
                 st.markdown(answer)
-                st.warning(f"Could not highlight sentences: {str(e)}")
+                st.warning(f"Could not evaluate response: {str(e)}")
 
-            # 2.2. Display evaluation metrics
+            # Display evaluation metrics
             with st.expander("📊 Quality metrics"):
                 try:
-                    # Combine all scores into a dictionary
-                    all_scores = {}
-                    
-                    # Add RAGAS scores
-                    for metric_name, score in ragas_scores.items():
-                        if isinstance(score, (int, float)):
-                            all_scores[metric_name] = score
-                    
-                    # Add consistency score
-                    all_scores["consistency"] = consistency_score
-                    
-                    # Display metrics
                     if all_scores:
+                        st.markdown("""
+                        **Understanding the metrics:**
+                        - **Answer relevancy**: How well the answer addresses the question
+                        - **Faithfulness**: How accurately it reflects the source documents
+                        - **Context utilization**: How effectively it uses the provided context
+                        - **Consistency**: How internally consistent the answer is
+                        """)
                         st.table({k: f"{v:.2f}" for k, v in all_scores.items()})
                     else:
                         st.info("No evaluation metrics available")
 
                 except Exception as e:
-                    st.warning(f"Could not compute metrics: {str(e)}")
+                    st.warning(f"Could not display metrics: {str(e)}")
 
-            # 2.3. Display source documents
+            # Display source documents
             with st.expander("📑 Source documents"):
                 for doc in docs:
                     try:
