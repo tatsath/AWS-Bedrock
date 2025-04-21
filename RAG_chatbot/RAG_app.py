@@ -8,6 +8,11 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 import os, glob
 from pathlib import Path
+from docx import Document
+from docx.shared import RGBColor, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import html
+from datetime import datetime
 
 # Download NLTK data
 import nltk
@@ -1015,6 +1020,32 @@ def get_response_from_LLM(prompt):
                     
                     Hover over highlighted text to see detailed scores.""")
 
+                # Add buttons for adding content to Word document
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("📝 Add Q&A to Report", key=f"add_qa_{len(st.session_state.messages)}"):
+                        content = {
+                            'question': prompt,
+                            'answer': answer,
+                            'metrics': all_scores,
+                            'sources': [{
+                                'source': doc.metadata.get('source', 'Unknown'),
+                                'page': doc.metadata.get('page', ''),
+                                'content': doc.page_content
+                            } for doc in docs]
+                        }
+                        st.session_state.selected_content.append(content)
+                        st.success("Added to report!")
+                
+                with col2:
+                    if st.button("📝 Add Q&A Only", key=f"add_qa_only_{len(st.session_state.messages)}"):
+                        content = {
+                            'question': prompt,
+                            'answer': answer
+                        }
+                        st.session_state.selected_content.append(content)
+                        st.success("Added to report (Q&A only)!")
+
             except Exception as e:
                 # Fallback to plain answer if highlighting fails
                 st.markdown(answer)
@@ -1057,7 +1088,41 @@ def get_response_from_LLM(prompt):
 #                         Chatbot
 ####################################################################
 def chatbot():
+    # Initialize session state for document handling
+    initialize_session_state()
+    
     sidebar_and_documentChooser()
+    
+    # Add Word document controls in sidebar
+    with st.sidebar:
+        st.divider()
+        st.subheader("📝 Report Controls")
+        
+        # Show number of selected items
+        num_selected = len(st.session_state.selected_content)
+        st.write(f"Selected items: {num_selected}")
+        
+        col1, col2 = st.columns(2)
+        
+        # Clear selection button
+        if col1.button("Clear Selection") and num_selected > 0:
+            st.session_state.selected_content = []
+            st.success("Selection cleared!")
+            
+        # Compile and download button
+        if col2.button("Compile Report") and num_selected > 0:
+            save_path, error = save_compiled_document()
+            if save_path:
+                with open(save_path, "rb") as file:
+                    st.download_button(
+                        label="Download Report",
+                        data=file,
+                        file_name=os.path.basename(save_path),
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+            else:
+                st.error(f"Error saving document: {error}")
+    
     st.divider()
     col1, col2 = st.columns([7, 3])
     with col1:
@@ -1097,6 +1162,99 @@ def chatbot():
             
         with st.spinner("Running..."):
             get_response_from_LLM(prompt=prompt)
+
+
+def initialize_session_state():
+    """Initialize session state variables for document handling"""
+    if 'selected_content' not in st.session_state:
+        st.session_state.selected_content = []
+    if 'current_doc' not in st.session_state:
+        st.session_state.current_doc = None
+
+def create_word_document():
+    """Create a new Word document with proper formatting"""
+    doc = Document()
+    # Add title
+    title = doc.add_heading('Chat History Report', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Add timestamp
+    timestamp = doc.add_paragraph()
+    timestamp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    timestamp.add_run(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    doc.add_paragraph()  # Add some space
+    return doc
+
+def add_qa_to_word(doc, question, answer, metrics=None, sources=None):
+    """Add a Q&A exchange with optional metrics and sources to the Word document"""
+    # Add question
+    q_para = doc.add_paragraph()
+    q_para.add_run("Question: ").bold = True
+    q_para.add_run(question)
+    
+    # Add answer
+    a_para = doc.add_paragraph()
+    a_para.add_run("Answer: ").bold = True
+    a_para.add_run(html.unescape(answer))
+    
+    # Add metrics if provided
+    if metrics:
+        doc.add_heading("Quality Metrics", level=2)
+        metrics_table = doc.add_table(rows=1, cols=2)
+        metrics_table.style = 'Table Grid'
+        header_cells = metrics_table.rows[0].cells
+        header_cells[0].text = 'Metric'
+        header_cells[1].text = 'Score'
+        
+        for metric, value in metrics.items():
+            row_cells = metrics_table.add_row().cells
+            row_cells[0].text = metric
+            row_cells[1].text = f"{value:.2f}"
+    
+    # Add sources if provided
+    if sources:
+        doc.add_heading("Source Documents", level=2)
+        for source in sources:
+            s_para = doc.add_paragraph()
+            s_para.add_run(f"Source: {source['source']}")
+            if source.get('page'):
+                s_para.add_run(f" (Page: {source['page']})")
+            s_para.add_run(f"\n{source['content'][:800]}...")
+    
+    doc.add_paragraph()  # Add space between entries
+    doc.add_paragraph("=" * 50)  # Add separator
+    doc.add_paragraph()
+
+def save_compiled_document():
+    """Save the compiled Word document with all selected content"""
+    if not st.session_state.selected_content:
+        return None, "No content selected to save"
+    
+    try:
+        doc = create_word_document()
+        
+        for content in st.session_state.selected_content:
+            add_qa_to_word(
+                doc,
+                content['question'],
+                content['answer'],
+                content.get('metrics'),
+                content.get('sources')
+            )
+        
+        # Save the document
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"chat_history_{timestamp}.docx"
+        save_path = os.path.join(os.path.dirname(__file__), "exports", filename)
+        
+        # Create exports directory if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        doc.save(save_path)
+        return save_path, None
+    except Exception as e:
+        return None, str(e)
 
 
 if __name__ == "__main__":
